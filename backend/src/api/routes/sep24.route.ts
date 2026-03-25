@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { randomUUID } from 'crypto';
+import { config } from '../../config/env';
 
 const router = Router();
 
@@ -45,7 +46,7 @@ router.post('/transactions/deposit/interactive', (req: Request, res: Response) =
   const transactionId = randomUUID();
 
   // Build redirect URL with transaction parameters
-  const baseUrl = process.env.INTERACTIVE_URL || 'http://localhost:3000';
+  const baseUrl = config.INTERACTIVE_URL;
   const redirectUrl = new URL('/kyc-deposit', baseUrl);
   redirectUrl.searchParams.append('transaction_id', transactionId);
   redirectUrl.searchParams.append('asset_code', asset_code);

@@ -1,13 +1,12 @@
 import express, { Request, Response } from 'express';
 import cors from 'cors';
-import dotenv from 'dotenv';
+import { config } from './config/env';
 import logger from './utils/logger';
 import transactionsRouter from './api/routes/transactions.route';
-
-dotenv.config();
+import sep24Router from './api/routes/sep24.route';
 
 const app = express();
-const PORT = process.env.PORT || 3002;
+const PORT = config.PORT;
 
 app.use(cors());
 app.use(express.json());
