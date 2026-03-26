@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "src/vesting", "src/upgradeable"]
+members = ["src/upgradeable", "src/token", "src/escrow_multisig"]
 resolver = "2"
 
 [package]
