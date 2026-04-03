@@ -27,3 +27,8 @@ Conflict merging PR #81, resolving by accepting both...
 Resolving conflict in backend/src/api/controllers/info.controller.ts
 Resolving conflict in backend/src/api/routes/sep24.route.ts
 Resolving conflict in backend/src/index.ts
+Successfully resolved and merged PR #81
+Merging PR #80: feat: add snapshot logic for rewards
+Conflict merging PR #80, resolving by accepting both...
+Resolving conflict in Cargo.toml
+Resolving conflict in src/staking/Cargo.toml
