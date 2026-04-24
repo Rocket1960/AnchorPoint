@@ -1,3 +1,4 @@
+import './config/tracing';
 import express, { Request, Response } from 'express';
 import cors from 'cors';
 import swaggerUi from 'swagger-ui-express';
@@ -12,12 +13,14 @@ import infoRouter from './api/routes/info.route';
 import metricsRouter from './api/routes/metrics.route';
 import { errorHandler } from './api/middleware/error.middleware';
 import { metricsMiddleware, connectionTracker } from './api/middleware/metrics.middleware';
+import { tracingMiddleware } from './api/middleware/tracing.middleware';
 
 const app = express();
 const PORT = config.PORT;
 
 app.use(cors());
 app.use(express.json());
+app.use(tracingMiddleware);
 
 /**
  * @swagger

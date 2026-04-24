@@ -1,11 +1,32 @@
 import winston from 'winston';
 import path from 'path';
+import { getCurrentTraceId, getCurrentSpanId } from './tracing';
 
 const { combine, timestamp, printf, colorize, errors } = winston.format;
 
-// Custom log format
-const logFormat = printf(({ level, message, timestamp, stack }) => {
-  return `${timestamp} [${level}]: ${stack || message}`;
+// Custom log format with trace context
+const logFormat = printf(({ level, message, timestamp, stack, ...meta }) => {
+  const traceId = getCurrentTraceId();
+  const spanId = getCurrentSpanId();
+  
+  let logMessage = `${timestamp} [${level}]`;
+  
+  if (traceId) {
+    logMessage += ` [trace_id=${traceId}]`;
+  }
+  
+  if (spanId) {
+    logMessage += ` [span_id=${spanId}]`;
+  }
+  
+  logMessage += `: ${stack || message}`;
+  
+  // Add any additional metadata
+  if (Object.keys(meta).length > 0) {
+    logMessage += ` ${JSON.stringify(meta)}`;
+  }
+  
+  return logMessage;
 });
 
 // Determine log level from environment

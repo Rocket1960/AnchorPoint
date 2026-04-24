@@ -32,6 +32,14 @@ const envSchema = z.object({
     .default('500')
     .transform((val: string) => parseInt(val, 10))
     .pipe(z.number().int().min(0)),
+  JAEGER_ENDPOINT: z.string().url().default('http://localhost:14268/api/traces'),
+  PROMETHEUS_METRICS_PORT: z
+    .string()
+    .default('9464')
+    .transform((val: string) => parseInt(val, 10))
+    .pipe(z.number().positive()),
+  OTEL_SERVICE_NAME: z.string().default('anchorpoint-backend'),
+  OTEL_RESOURCE_ATTRIBUTES: z.string().optional(),
 });
 
 const parsed = envSchema.safeParse({
