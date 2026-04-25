@@ -1,150 +1,140 @@
-import { rpc, xdr, scValToNative } from '@stellar/stellar-sdk';
 import { PrismaClient } from '@prisma/client';
-import { config } from '../config/env';
-import logger from '../utils/logger';
+import { rpc, xdr, scValToNative } from '@stellar/stellar-sdk';
+import { logger } from '../utils/logger';
 
 const prisma = new PrismaClient();
 
 export class EventIndexerService {
-  private server: rpc.Server;
-  private isRunning: boolean = false;
-  private pollInterval: number = 5000; // 5 seconds
+    private rpcServer: rpc.Server;
+    private isRunning: boolean = false;
+    private pollInterval: number = 5000; // 5 seconds
 
-  constructor() {
-    this.server = new rpc.Server(config.SOROBAN_RPC_URL);
-  }
-
-  async start() {
-    if (this.isRunning) return;
-    this.isRunning = true;
-    logger.info('Event Indexer Service starting...');
-    this.run();
-  }
-
-  stop() {
-    this.isRunning = false;
-    logger.info('Event Indexer Service stopping...');
-  }
-
-  private async run() {
-    while (this.isRunning) {
-      try {
-        await this.indexEvents();
-      } catch (error) {
-        logger.error('Error in event indexer loop:', error);
-      }
-      await new Promise(resolve => setTimeout(resolve, this.pollInterval));
-    }
-  }
-
-  private async indexEvents() {
-    const contracts = [
-      config.SWAP_CONTRACT_ID,
-      config.YIELD_CONTRACT_ID,
-      config.NFT_CONTRACT_ID
-    ].filter(Boolean) as string[];
-
-    if (contracts.length === 0) {
-      logger.warn('No contract IDs configured for indexing');
-      return;
+    constructor(rpcUrl: string = process.env.SOROBAN_RPC_URL || 'https://soroban-testnet.stellar.org') {
+        this.rpcServer = new rpc.Server(rpcUrl);
     }
 
-    // Get the last indexed ledger
-    const lastEvent = await prisma.contractEvent.findFirst({
-      orderBy: { ledger: 'desc' },
-    });
-
-    let startLedger = lastEvent ? lastEvent.ledger : undefined;
-    
-    // If no events indexed yet, we might want to start from current ledger
-    if (!startLedger) {
-      const networkStatus = await this.server.getLatestLedger();
-      startLedger = networkStatus.sequence;
+    /**
+     * Start the event indexing service
+     */
+    public async start() {
+        if (this.isRunning) return;
+        this.isRunning = true;
+        logger.info('Event Indexer Service started');
+        this.poll();
     }
 
-    logger.debug(`Fetching events from ledger ${startLedger}...`);
-
-    try {
-      const response = await this.server.getEvents({
-        startLedger: startLedger,
-        filters: [
-          {
-            contractIds: contracts,
-          }
-        ],
-        limit: 100,
-      });
-
-      if (response.events.length === 0) {
-        return;
-      }
-
-      logger.info(`Found ${response.events.length} new events`);
-
-      for (const event of response.events) {
-        await this.processEvent(event);
-      }
-    } catch (error) {
-      if (error instanceof Error && error.message.includes('404')) {
-        // Might be that startLedger is too old or not yet available
-        return;
-      }
-      throw error;
+    /**
+     * Stop the event indexing service
+     */
+    public stop() {
+        this.isRunning = false;
+        logger.info('Event Indexer Service stopped');
     }
-  }
 
-  private async processEvent(event: any) {
-    // Use txHash and ledger to avoid duplicates, as multiple events can happen in one tx
-    // But rpc.Api.GetEventResponse actually has an 'id' which is unique (ledger-tx-index)
-    // Stellar SDK v14 might have different event structure, let's be safe.
-    
-    const existing = await prisma.contractEvent.findFirst({
-      where: { 
-        txHash: event.txHash,
-        ledger: event.ledger,
-        // Since we don't have an event index in the schema yet, 
-        // we might still have duplicates if multiple events are in one tx.
-        // For now, let's just proceed and we can refine later.
-      }
-    });
-
-    // We'll use the event topics to determine the type
-    const eventType = this.getEventType(event.topic);
-    const data = this.parseEventData(event.value);
-
-    await prisma.contractEvent.create({
-      data: {
-        contractId: event.contractId,
-        ledger: event.ledger,
-        ledgerClosedAt: event.ledgerClosedAt,
-        txHash: event.txHash,
-        eventType,
-        data: data as any,
-      }
-    });
-    
-    logger.debug(`Indexed ${eventType} event from contract ${event.contractId}`);
-  }
-
-  private getEventType(topicXdr: string[]): string {
-    try {
-      if (topicXdr.length === 0) return 'unknown';
-      const firstTopic = xdr.ScVal.fromXDR(topicXdr[0], 'base64');
-      const native = scValToNative(firstTopic);
-      return String(native);
-    } catch {
-      return 'unknown';
+    /**
+     * Continuous polling for events
+     */
+    private async poll() {
+        while (this.isRunning) {
+            try {
+                await this.indexEvents();
+            } catch (error) {
+                logger.error('Error in Event Indexer poll loop:', error);
+            }
+            await new Promise(resolve => setTimeout(resolve, this.pollInterval));
+        }
     }
-  }
 
-  private parseEventData(value: any): any {
-    try {
-      const scVal = xdr.ScVal.fromXDR(value.xdr, 'base64');
-      return scValToNative(scVal);
-    } catch {
-      return { xdr: value.xdr };
+    /**
+     * Fetch and index events from Soroban RPC
+     */
+    public async indexEvents() {
+        // Get the last indexed ledger or start from a reasonable default
+        const lastEvent = await prisma.contractEvent.findFirst({
+            orderBy: { ledger: 'desc' }
+        });
+
+        const startLedger = lastEvent ? lastEvent.ledger + 1 : undefined;
+
+        logger.info(`Fetching events from ledger: ${startLedger || 'earliest available'}`);
+
+        // Soroban RPC getEvents call
+        // Note: In a real scenario, you'd handle pagination and filters properly
+        const response = await this.rpcServer.getEvents({
+            startLedger: startLedger,
+            filters: [
+                {
+                    type: 'contract',
+                    // Add contract IDs here to filter if needed
+                }
+            ],
+            limit: 100
+        });
+
+        if (response.events && response.events.length > 0) {
+            logger.info(`Found ${response.events.length} events to index`);
+
+            for (const event of response.events) {
+                try {
+                    await this.processEvent(event);
+                } catch (err) {
+                    logger.error(`Failed to process event ${event.id}:`, err);
+                }
+            }
+        }
     }
-  }
+
+    /**
+     * Parse and store a single event
+     */
+    private async processEvent(event: rpc.Api.GetEventResponse) {
+        // Parse XDR topics and value
+        const topics = event.topic.map(t => {
+            const scVal = xdr.ScVal.fromXDR(t, 'base64');
+            return scValToNative(scVal);
+        });
+
+        const valueScVal = xdr.ScVal.fromXDR(event.value, 'base64');
+        const value = scValToNative(valueScVal);
+
+        // Store in database
+        await prisma.contractEvent.upsert({
+            where: { contractEventId: event.id },
+            update: {},
+            create: {
+                contractEventId: event.id,
+                contractId: event.contractId,
+                ledger: event.ledger,
+                ledgerClosedAt: new Date(event.ledgerClosedAt),
+                txHash: event.txHash,
+                topics: JSON.stringify(topics),
+                value: JSON.stringify(value),
+                type: event.type
+            }
+        });
+
+        logger.debug(`Indexed event ${event.id} from contract ${event.contractId}`);
+    }
+
+    /**
+     * Query event history from database
+     */
+    public async getEventHistory(filters: {
+        contractId?: string,
+        type?: string,
+        limit?: number,
+        offset?: number
+    }) {
+        return prisma.contractEvent.findMany({
+            where: {
+                contractId: filters.contractId,
+                type: filters.type
+            },
+            orderBy: { ledger: 'desc' },
+            take: filters.limit || 50,
+            skip: filters.offset || 0
+        });
+    }
 }
 
 export const eventIndexer = new EventIndexerService();
