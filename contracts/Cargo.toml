@@ -1,5 +1,5 @@
 [workspace]
-members = ["yield", "nft_metadata", "staking"]
+members = ["yield", "nft_metadata", "reentrancy-guard"]
 
 [workspace.package]
 version = "0.0.0"
@@ -7,13 +7,3 @@ edition = "2021"
 
 [workspace.dependencies]
 soroban-sdk = "22.0.0"
-
-[profile.release]
-opt-level = "z"
-overflow-checks = true
-debug = 0
-strip = "symbols"
-debug-assertions = false
-panic = "abort"
-codegen-units = 1
-lto = true
