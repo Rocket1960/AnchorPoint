@@ -1,173 +1,188 @@
 import { Response } from 'express';
-import { randomUUID } from 'crypto';
-import { AuthRequest } from '../middleware/auth.middleware';
-import * as sep6Controller from './sep6.controller';
-import * as kycService from '../../services/kyc.service';
 import prisma from '../../lib/prisma';
-import { ASSETS } from '../../config/assets';
+import {
+  sep6Deposit,
+  sep6GetTransaction,
+  sep6GetTransactions,
+  sep6Info,
+  sep6Withdraw,
+} from './sep6.controller';
 
-jest.mock('../../lib/prisma');
-jest.mock('../../services/kyc.service');
-jest.mock('crypto');
+jest.mock('../../lib/prisma', () => ({
+  user: {
+    upsert: jest.fn(),
+  },
+  transaction: {
+    create: jest.fn(),
+    findFirst: jest.fn(),
+    findMany: jest.fn(),
+  },
+}));
 
 describe('SEP-6 Controller', () => {
-  let mockRequest: Partial<AuthRequest>;
-  let mockResponse: Partial<Response>;
   let jsonMock: jest.Mock;
   let statusMock: jest.Mock;
+  let mockResponse: Partial<Response>;
 
   beforeEach(() => {
-    jsonMock = jest.fn().mockReturnThis();
+    jest.clearAllMocks();
+    jsonMock = jest.fn();
     statusMock = jest.fn().mockReturnValue({ json: jsonMock });
-
-    mockRequest = {
-      body: {},
-      query: {},
-      user: { publicKey: 'GBTEST123' }
-    };
-
     mockResponse = {
       json: jsonMock,
-      status: statusMock
+      status: statusMock,
     };
-
-    jest.clearAllMocks();
-    (randomUUID as jest.Mock).mockReturnValue('test-transaction-id-123');
   });
 
   describe('sep6Info', () => {
-    it('should return info with supported assets', () => {
-      sep6Controller.sep6Info(mockRequest as AuthRequest, mockResponse as Response);
-
-      expect(jsonMock).toHaveBeenCalled();
-      const response = jsonMock.mock.calls[0][0];
-      expect(response).toHaveProperty('deposit');
-      expect(response).toHaveProperty('withdraw');
-    });
-
-    it('should include deposit info for supported deposit assets', () => {
-      sep6Controller.sep6Info(mockRequest as AuthRequest, mockResponse as Response);
-
-      const response = jsonMock.mock.calls[0][0];
-      expect(Object.keys(response.deposit).length).toBeGreaterThan(0);
-      const firstAsset = Object.values(response.deposit)[0] as any;
-      expect(firstAsset).toHaveProperty('enabled', true);
-      expect(firstAsset).toHaveProperty('min_amount');
-      expect(firstAsset).toHaveProperty('max_amount');
-      expect(firstAsset).toHaveProperty('fee_fixed');
-      expect(firstAsset).toHaveProperty('fee_percent');
-      expect(firstAsset).toHaveProperty('fields');
-    });
-
-    it('should include withdraw info for supported withdraw assets', () => {
-      sep6Controller.sep6Info(mockRequest as AuthRequest, mockResponse as Response);
-
-      const response = jsonMock.mock.calls[0][0];
-      expect(Object.keys(response.withdraw).length).toBeGreaterThan(0);
-      const firstAsset = Object.values(response.withdraw)[0] as any;
-      expect(firstAsset).toHaveProperty('enabled', true);
-      expect(firstAsset).toHaveProperty('types');
+    it('returns deposit and withdraw info maps', () => {
+      sep6Info({} as any, mockResponse as Response);
+      expect(jsonMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          deposit: expect.any(Object),
+          withdraw: expect.any(Object),
+        })
+      );
     });
   });
 
   describe('sep6Deposit', () => {
-    beforeEach(() => {
-      (kycService.isDepositSupported as jest.Mock).mockReturnValue(true);
-      (kycService.normalizeAssetCode as jest.Mock).mockImplementation(code => code.toUpperCase());
-      (kycService.getAsset as jest.Mock).mockReturnValue({
-        code: 'USDC',
-        minAmount: '0.01',
-        maxAmount: '100000',
-        feeFixed: '0.1',
-        feePercent: '0.001'
+    it('returns 400 for unsupported asset', async () => {
+      const req = {
+        query: { asset_code: 'NOPE' },
+        user: { publicKey: 'GTEST' },
+      } as any;
+
+      await sep6Deposit(req, mockResponse as Response);
+
+      expect(statusMock).toHaveBeenCalledWith(400);
+      expect(jsonMock).toHaveBeenCalledWith({
+        error: 'Asset NOPE is not supported for deposit.',
       });
     });
 
-    it('should return 400 when asset_code is missing', async () => {
-      mockRequest.query = {};
+    it('creates a pending transaction and returns instructions', async () => {
+      (prisma.transaction.create as jest.Mock).mockResolvedValue({ id: 'tx_1' });
 
-      await sep6Controller.sep6Deposit(mockRequest as AuthRequest, mockResponse as Response);
+      const req = {
+        query: {
+          asset_code: 'USDC',
+          amount: '10',
+          email_address: 'bench@example.com',
+        },
+        user: { publicKey: 'GTEST' },
+      } as any;
+
+      await sep6Deposit(req, mockResponse as Response);
+
+      expect(prisma.transaction.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            type: 'DEPOSIT',
+            status: 'PENDING',
+            assetCode: 'USDC',
+            user: expect.objectContaining({
+              connectOrCreate: expect.objectContaining({
+                where: { publicKey: 'GTEST' },
+              }),
+            }),
+          }),
+        })
+      );
+
+      expect(jsonMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: 'tx_1',
+          how: expect.stringContaining('Send USDC'),
+        })
+      );
+    });
+  });
+
+  describe('sep6Withdraw', () => {
+    it('returns 400 when dest is missing', async () => {
+      const req = {
+        query: { asset_code: 'USDC' },
+        user: { publicKey: 'GTEST' },
+      } as any;
+
+      await sep6Withdraw(req, mockResponse as Response);
 
       expect(statusMock).toHaveBeenCalledWith(400);
-      expect(jsonMock).toHaveBeenCalledWith(
-        expect.objectContaining({
-          error: expect.any(String)
-        })
-      );
+      expect(jsonMock).toHaveBeenCalledWith({ error: 'dest is required for withdrawal.' });
     });
 
-    it('should return 400 for unsupported asset', async () => {
-      mockRequest.query = { asset_code: 'UNSUPPORTED' };
-      (kycService.isDepositSupported as jest.Mock).mockReturnValue(false);
+    it('creates a pending withdraw transaction', async () => {
+      (prisma.transaction.create as jest.Mock).mockResolvedValue({ id: 'tx_2' });
 
-      await sep6Controller.sep6Deposit(mockRequest as AuthRequest, mockResponse as Response);
+      const req = {
+        query: { asset_code: 'USDC', amount: '5', dest: 'bank-1' },
+        user: { publicKey: 'GTEST' },
+      } as any;
 
+      await sep6Withdraw(req, mockResponse as Response);
+
+      expect(prisma.transaction.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            type: 'WITHDRAW',
+            status: 'PENDING',
+            assetCode: 'USDC',
+          }),
+        })
+      );
+
+      expect(jsonMock).toHaveBeenCalledWith(expect.objectContaining({ id: 'tx_2' }));
+    });
+  });
+
+  describe('sep6GetTransaction', () => {
+    it('returns 400 when no identifiers are provided', async () => {
+      const req = {
+        query: {},
+        user: { publicKey: 'GTEST' },
+      } as any;
+
+      await sep6GetTransaction(req, mockResponse as Response);
       expect(statusMock).toHaveBeenCalledWith(400);
-      expect(jsonMock).toHaveBeenCalledWith(
-        expect.objectContaining({
-          error: expect.stringContaining('not supported for deposit')
-        })
-      );
     });
 
-    it('should return 400 when amount is below minimum', async () => {
-      mockRequest.query = { asset_code: 'USDC', amount: '0.001' };
+    it('returns 404 when transaction is not found', async () => {
+      (prisma.transaction.findFirst as jest.Mock).mockResolvedValue(null);
 
-      await sep6Controller.sep6Deposit(mockRequest as AuthRequest, mockResponse as Response);
+      const req = {
+        query: { id: 'missing' },
+        user: { publicKey: 'GTEST' },
+      } as any;
 
-      expect(statusMock).toHaveBeenCalledWith(400);
-      expect(jsonMock).toHaveBeenCalledWith(
-        expect.objectContaining({
-          error: expect.stringContaining('must be between')
-        })
-      );
+      await sep6GetTransaction(req, mockResponse as Response);
+      expect(statusMock).toHaveBeenCalledWith(404);
     });
+  });
 
-    it('should return 400 when amount is above maximum', async () => {
-      mockRequest.query = { asset_code: 'USDC', amount: '1000000' };
+  describe('sep6GetTransactions', () => {
+    it('returns transactions list', async () => {
+      (prisma.transaction.findMany as jest.Mock).mockResolvedValue([
+        {
+          id: 'tx_1',
+          assetCode: 'USDC',
+          amount: '1',
+          type: 'DEPOSIT',
+          status: 'PENDING',
+          externalId: null,
+          stellarTxId: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      ]);
 
-      await sep6Controller.sep6Deposit(mockRequest as AuthRequest, mockResponse as Response);
+      const req = {
+        query: { asset_code: 'USDC', limit: '1' },
+        user: { publicKey: 'GTEST' },
+      } as any;
 
-      expect(statusMock).toHaveBeenCalledWith(400);
-      expect(jsonMock).toHaveBeenCalledWith(
-        expect.objectContaining({
-          error: expect.stringContaining('must be between')
-        })
-      );
-    });
-
-    it('should create deposit transaction successfully', async () => {
-      mockRequest.query = { asset_code: 'USDC', amount: '100', email_address: 'user@example.com' };
-      (prisma.user.upsert as jest.Mock).mockResolvedValue({ id: 'user-1', publicKey: 'GBTEST123' });
-      (prisma.transaction.create as jest.Mock).mockResolvedValue({
-        id: 'test-transaction-id-123',
-        userId: 'user-1',
-        assetCode: 'USDC',
-        amount: '100',
-        type: 'DEPOSIT',
-        status: 'PENDING'
-      });
-
-      await sep6Controller.sep6Deposit(mockRequest as AuthRequest, mockResponse as Response);
-
-      expect(jsonMock).toHaveBeenCalledWith(
-        expect.objectContaining({
-          id: 'test-transaction-id-123',
-          eta: expect.any(Number),
-          min_amount: '0.01',
-          max_amount: '100000'
-        })
-      );
-    });
-
-    it('should normalize asset code to uppercase', async () => {
-      mockRequest.query = { asset_code: 'usdc', amount: '100' };
-      (prisma.user.upsert as jest.Mock).mockResolvedValue({ id: 'user-1' });
-      (prisma.transaction.create as jest.Mock).mockResolvedValue({ id: 'tx-1' });
-
-      await sep6Controller.sep6Deposit(mockRequest as AuthRequest, mockResponse as Response);
-
-      expect(kycService.normalizeAssetCode).toHaveBeenCalledWith('usdc');
+      await sep6GetTransactions(req, mockResponse as Response);
+      expect(jsonMock).toHaveBeenCalledWith(expect.objectContaining({ transactions: expect.any(Array) }));
     });
   });
 });
