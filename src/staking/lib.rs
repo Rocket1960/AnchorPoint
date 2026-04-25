@@ -1,5 +1,5 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, IntoVal, token};
+use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, token};
 
 #[contracttype]
 pub enum DataKey {
@@ -9,7 +9,6 @@ pub enum DataKey {
     LockPeriod, // Seconds
     PenaltyBps, // Penalty percentage (10000 = 100%)
     Stake(Address),
-    Registry,
 }
 
 #[contracttype]
@@ -28,6 +27,14 @@ pub struct StakingContract;
 
 #[contractimpl]
 impl StakingContract {
+
+    pub fn set_security_registry(env: soroban_sdk::Env, registry: soroban_sdk::Address) {
+        if env.storage().instance().has(&soroban_sdk::symbol_short!("sec_reg")) {
+            panic!("already set");
+        }
+        env.storage().instance().set(&soroban_sdk::symbol_short!("sec_reg"), &registry);
+    }
+
     pub fn initialize(
         env: Env,
         admin: Address,
@@ -47,14 +54,15 @@ impl StakingContract {
         env.storage().instance().set(&DataKey::PenaltyBps, &penalty_bps);
     }
 
-    pub fn set_registry(env: Env, registry: Address) {
-        let admin: Address = env.storage().instance().get(&DataKey::Admin).expect("not initialized");
-        admin.require_auth();
-        env.storage().instance().set(&DataKey::Registry, &registry);
-    }
-
     pub fn stake(env: Env, user: Address, amount: i128) {
-        Self::ensure_not_paused(&env);
+
+        if let Some(registry) = env.storage().instance().get::<_, soroban_sdk::Address>(&soroban_sdk::symbol_short!("sec_reg")) {
+            let is_paused: bool = env.invoke_contract(&registry, &soroban_sdk::Symbol::new(&env, "is_paused"), soroban_sdk::vec![&env]);
+            if is_paused {
+                panic!("contract is paused");
+            }
+        }
+
         user.require_auth();
         assert!(amount > 0, "amount must be positive");
 
@@ -76,7 +84,14 @@ impl StakingContract {
     }
 
     pub fn withdraw(env: Env, user: Address) {
-        Self::ensure_not_paused(&env);
+
+        if let Some(registry) = env.storage().instance().get::<_, soroban_sdk::Address>(&soroban_sdk::symbol_short!("sec_reg")) {
+            let is_paused: bool = env.invoke_contract(&registry, &soroban_sdk::Symbol::new(&env, "is_paused"), soroban_sdk::vec![&env]);
+            if is_paused {
+                panic!("contract is paused");
+            }
+        }
+
         user.require_auth();
         let info = Self::get_stake_info(env.clone(), user.clone());
         assert!(info.amount > 0, "nothing to withdraw");
@@ -107,7 +122,14 @@ impl StakingContract {
     }
 
     pub fn claim_rewards(env: Env, user: Address) {
-        Self::ensure_not_paused(&env);
+
+        if let Some(registry) = env.storage().instance().get::<_, soroban_sdk::Address>(&soroban_sdk::symbol_short!("sec_reg")) {
+            let is_paused: bool = env.invoke_contract(&registry, &soroban_sdk::Symbol::new(&env, "is_paused"), soroban_sdk::vec![&env]);
+            if is_paused {
+                panic!("contract is paused");
+            }
+        }
+
         user.require_auth();
         let mut info = Self::get_stake_info(env.clone(), user.clone());
         let current_time = env.ledger().timestamp();
@@ -141,14 +163,5 @@ impl StakingContract {
         let rate: i128 = env.storage().instance().get(&DataKey::RewardRate).unwrap();
         let seconds = (current_time - info.last_updated) as i128;
         (info.amount * rate * seconds) / REWARD_PRECISION
-    }
-
-    fn ensure_not_paused(env: &Env) {
-        if let Some(registry_addr) = env.storage().instance().get::<_, Address>(&DataKey::Registry) {
-            let is_paused: bool = env.invoke_contract(&registry_addr, &soroban_sdk::symbol_short!("is_paused"), ().into_val(env));
-            if is_paused {
-                panic!("system is paused");
-            }
-        }
     }
 }

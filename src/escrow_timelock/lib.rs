@@ -1,5 +1,5 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, IntoVal, token};
+use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, token};
 
 #[contracttype]
 #[derive(Clone)]
@@ -7,7 +7,6 @@ pub enum DataKey {
     EscrowInitialized,
     EscrowDetails,
     RefundClaimed,
-    Registry,
 }
 
 #[contracttype]
@@ -26,6 +25,14 @@ pub struct EscrowTimelock;
 
 #[contractimpl]
 impl EscrowTimelock {
+
+    pub fn set_security_registry(env: soroban_sdk::Env, registry: soroban_sdk::Address) {
+        if env.storage().instance().has(&soroban_sdk::symbol_short!("sec_reg")) {
+            panic!("already set");
+        }
+        env.storage().instance().set(&soroban_sdk::symbol_short!("sec_reg"), &registry);
+    }
+
     /// Initialize a time-locked escrow contract
     /// 
     /// # Arguments
@@ -81,15 +88,8 @@ impl EscrowTimelock {
         token_client.transfer(&sender, &e.current_contract_address(), &amount);
     }
 
-    pub fn set_registry(e: Env, registry: Address) {
-        let details: EscrowDetails = e.storage().instance().get(&DataKey::EscrowDetails).expect("not initialized");
-        details.sender.require_auth();
-        e.storage().instance().set(&DataKey::Registry, &registry);
-    }
-
     /// Mark conditions as met (can only be called by sender)
     pub fn mark_conditions_met(e: Env) {
-        Self::ensure_not_paused(&e);
         let mut details: EscrowDetails = e
             .storage()
             .instance()
@@ -104,7 +104,14 @@ impl EscrowTimelock {
 
     /// Claim funds as the recipient (only after unlock_time or if conditions are met)
     pub fn claim(e: Env) {
-        Self::ensure_not_paused(&e);
+
+        if let Some(registry) = e.storage().instance().get::<_, soroban_sdk::Address>(&soroban_sdk::symbol_short!("sec_reg")) {
+            let is_paused: bool = e.invoke_contract(&registry, &soroban_sdk::Symbol::new(&e, "is_paused"), soroban_sdk::vec![&e]);
+            if is_paused {
+                panic!("contract is paused");
+            }
+        }
+
         let details: EscrowDetails = e
             .storage()
             .instance()
@@ -142,7 +149,14 @@ impl EscrowTimelock {
 
     /// Request refund as sender (only if unlock_time has passed and recipient hasn't claimed)
     pub fn refund(e: Env) {
-        Self::ensure_not_paused(&e);
+
+        if let Some(registry) = e.storage().instance().get::<_, soroban_sdk::Address>(&soroban_sdk::symbol_short!("sec_reg")) {
+            let is_paused: bool = e.invoke_contract(&registry, &soroban_sdk::Symbol::new(&e, "is_paused"), soroban_sdk::vec![&e]);
+            if is_paused {
+                panic!("contract is paused");
+            }
+        }
+
         let details: EscrowDetails = e
             .storage()
             .instance()
@@ -197,15 +211,6 @@ impl EscrowTimelock {
     /// Get current ledger timestamp
     pub fn get_current_time(e: Env) -> u64 {
         e.ledger().timestamp()
-    }
-
-    fn ensure_not_paused(env: &Env) {
-        if let Some(registry_addr) = env.storage().instance().get::<_, Address>(&DataKey::Registry) {
-            let is_paused: bool = env.invoke_contract(&registry_addr, &soroban_sdk::symbol_short!("is_paused"), ().into_val(env));
-            if is_paused {
-                panic!("system is paused");
-            }
-        }
     }
 }
 

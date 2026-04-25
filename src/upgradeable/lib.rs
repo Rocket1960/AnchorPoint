@@ -1,6 +1,6 @@
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, contracttype, Address, BytesN, Env, IntoVal};
+use soroban_sdk::{contract, contractimpl, contracttype, Address, BytesN, Env};
 
 /// Storage keys used by the upgradeable contract.
 #[derive(Clone)]
@@ -10,7 +10,6 @@ enum DataKey {
     Admin,
     /// The current contract version number (incremented on each upgrade).
     Version,
-    Registry,
 }
 
 #[contract]
@@ -18,6 +17,14 @@ pub struct UpgradeableContract;
 
 #[contractimpl]
 impl UpgradeableContract {
+
+    pub fn set_security_registry(env: soroban_sdk::Env, registry: soroban_sdk::Address) {
+        if env.storage().instance().has(&soroban_sdk::symbol_short!("sec_reg")) {
+            panic!("already set");
+        }
+        env.storage().instance().set(&soroban_sdk::symbol_short!("sec_reg"), &registry);
+    }
+
     /// Initializes the contract with the given admin address.
     ///
     /// # Arguments
@@ -36,12 +43,6 @@ impl UpgradeableContract {
         env.storage().instance().set(&DataKey::Version, &1u32);
     }
 
-    pub fn set_registry(env: Env, registry: Address) {
-        let admin: Address = env.storage().instance().get(&DataKey::Admin).expect("not initialized");
-        admin.require_auth();
-        env.storage().instance().set(&DataKey::Registry, &registry);
-    }
-
     /// Upgrades the contract to a new WASM binary identified by `new_wasm_hash`.
     ///
     /// Only the current admin can call this function. The version counter is
@@ -54,7 +55,14 @@ impl UpgradeableContract {
     /// # Panics
     /// Panics if the caller is not the admin.
     pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) {
-        Self::ensure_not_paused(&env);
+
+        if let Some(registry) = env.storage().instance().get::<_, soroban_sdk::Address>(&soroban_sdk::symbol_short!("sec_reg")) {
+            let is_paused: bool = env.invoke_contract(&registry, &soroban_sdk::Symbol::new(&env, "is_paused"), soroban_sdk::vec![&env]);
+            if is_paused {
+                panic!("contract is paused");
+            }
+        }
+
         // Retrieve the admin and enforce authorization.
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         admin.require_auth();
@@ -84,7 +92,6 @@ impl UpgradeableContract {
     /// # Panics
     /// Panics if the caller is not the current admin.
     pub fn set_admin(env: Env, new_admin: Address) {
-        Self::ensure_not_paused(&env);
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         admin.require_auth();
 
@@ -105,15 +112,6 @@ impl UpgradeableContract {
     /// Returns the current admin address.
     pub fn get_admin(env: Env) -> Address {
         env.storage().instance().get(&DataKey::Admin).unwrap()
-    }
-
-    fn ensure_not_paused(env: &Env) {
-        if let Some(registry_addr) = env.storage().instance().get::<_, Address>(&DataKey::Registry) {
-            let is_paused: bool = env.invoke_contract(&registry_addr, &soroban_sdk::symbol_short!("is_paused"), ().into_val(env));
-            if is_paused {
-                panic!("system is paused");
-            }
-        }
     }
 }
 

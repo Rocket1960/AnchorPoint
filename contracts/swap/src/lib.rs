@@ -1,30 +1,8 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short, token, Address, Env, IntoVal,
+    contract, contractimpl, contracttype, symbol_short, token, Address, Env,
 };
-
-#[contracttype]
-#[derive(Clone, Debug, PartialEq)]
-pub struct InitializedEvent {
-    pub token_a: Address,
-    pub token_b: Address,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, PartialEq)]
-pub struct DepositEvent {
-    pub amount_a: i128,
-    pub amount_b: i128,
-}
-
-#[contracttype]
-#[derive(Clone, Debug, PartialEq)]
-pub struct SwapEvent {
-    pub token_in: Address,
-    pub amount_in: i128,
-    pub amount_out: i128,
-}
 
 #[contracttype]
 #[derive(Clone)]
@@ -33,8 +11,6 @@ pub enum DataKey {
     TokenB,
     ReserveA,
     ReserveB,
-    Admin,
-    Registry,
 }
 
 #[contract]
@@ -42,32 +18,36 @@ pub struct MultiAssetSwap;
 
 #[contractimpl]
 impl MultiAssetSwap {
+
+    pub fn set_security_registry(env: soroban_sdk::Env, registry: soroban_sdk::Address) {
+        if env.storage().instance().has(&soroban_sdk::symbol_short!("sec_reg")) {
+            panic!("already set");
+        }
+        env.storage().instance().set(&soroban_sdk::symbol_short!("sec_reg"), &registry);
+    }
+
     /// Initializes the swap pool.
-    pub fn initialize(env: Env, admin: Address, token_a: Address, token_b: Address) {
+    pub fn initialize(env: Env, token_a: Address, token_b: Address) {
         if env.storage().instance().has(&DataKey::TokenA) {
             panic!("already initialized");
         }
         
-        env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::TokenA, &token_a);
         env.storage().instance().set(&DataKey::TokenB, &token_b);
         env.storage().instance().set(&DataKey::ReserveA, &0_i128);
         env.storage().instance().set(&DataKey::ReserveB, &0_i128);
-        env.events().publish(
-            (symbol_short!("Swap"), symbol_short!("Init"), symbol_short!("v1"), ()),
-            InitializedEvent { token_a, token_b },
-        );
-    }
-
-    pub fn set_registry(env: Env, registry: Address) {
-        let admin: Address = env.storage().instance().get(&DataKey::Admin).expect("not initialized");
-        admin.require_auth();
-        env.storage().instance().set(&DataKey::Registry, &registry);
     }
 
     /// Deposits liquidity into the pool.
     pub fn deposit(env: Env, from: Address, amount_a: i128, amount_b: i128) {
-        Self::ensure_not_paused(&env);
+
+        if let Some(registry) = env.storage().instance().get::<_, soroban_sdk::Address>(&soroban_sdk::symbol_short!("sec_reg")) {
+            let is_paused: bool = env.invoke_contract(&registry, &soroban_sdk::Symbol::new(&env, "is_paused"), soroban_sdk::vec![&env]);
+            if is_paused {
+                panic!("contract is paused");
+            }
+        }
+
         from.require_auth();
         assert!(amount_a > 0 && amount_b > 0, "amount must be positive");
 
@@ -85,10 +65,7 @@ impl MultiAssetSwap {
         env.storage().instance().set(&DataKey::ReserveA, &(reserve_a + amount_a));
         env.storage().instance().set(&DataKey::ReserveB, &(reserve_b + amount_b));
 
-        env.events().publish(
-            (symbol_short!("Swap"), symbol_short!("Deposit"), symbol_short!("v1"), from),
-            DepositEvent { amount_a, amount_b },
-        );
+        env.events().publish((symbol_short!("deposit"), from), (amount_a, amount_b));
     }
 
     /// Swaps tokens using the constant product formula (with a 0.3% fee).
@@ -100,7 +77,6 @@ impl MultiAssetSwap {
         amount_in: i128,
         min_amount_out: i128,
     ) -> i128 {
-        Self::ensure_not_paused(&env);
         from.require_auth();
         assert!(amount_in > 0, "amount must be positive");
 
@@ -157,21 +133,9 @@ impl MultiAssetSwap {
         // Transfer token_out to user
         token::Client::new(&env, &token_out).transfer(&contract_addr, &from, &amount_out);
 
-        env.events().publish(
-            (symbol_short!("Swap"), symbol_short!("Swapped"), symbol_short!("v1"), from),
-            SwapEvent { token_in, amount_in, amount_out },
-        );
+        env.events().publish((symbol_short!("swap"), from), (amount_in, amount_out));
 
         amount_out
-    }
-
-    fn ensure_not_paused(env: &Env) {
-        if let Some(registry_addr) = env.storage().instance().get::<_, Address>(&DataKey::Registry) {
-            let is_paused: bool = env.invoke_contract(&registry_addr, &soroban_sdk::symbol_short!("is_paused"), ().into_val(env));
-            if is_paused {
-                panic!("system is paused");
-            }
-        }
     }
 }
 
