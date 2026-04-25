@@ -1,4 +1,4 @@
-﻿#![no_std]
+#![no_std]
 //! Governance Contract with Enhanced Quadratic Voting
 //!
 //! This contract implements a sophisticated quadratic voting mechanism where:
@@ -7,7 +7,7 @@
 //! - Proposals require quorum to pass
 //! - Mathematical accuracy is ensured through careful integer operations
 
-use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, String, IntoVal};
+use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, IntoVal, String};
 
 /// Default voting credits allocated to each user
 const DEFAULT_VOTING_CREDITS: i128 = 10_000;
@@ -22,8 +22,6 @@ pub enum DataKey {
     Admin,
     /// Token contract address for voting power
     TokenContract,
-    /// Staking contract address for duration-based voting power
-    StakingContract,
     /// Counter for proposal IDs
     ProposalCounter,
     /// Individual proposal data
@@ -40,12 +38,7 @@ pub enum DataKey {
     ProposalQuadraticCost(u32),
     /// User's quadratic cost spent on a proposal
     UserQuadraticCost(u32, Address),
-    /// Snapshot of user's voting power at proposal creation
-    VotingPowerSnapshot(Address, u32),
-    /// Snapshot ledger sequence for a proposal
-    ProposalSnapshot(u32),
-    /// Minimum lock duration required for voting (seconds)
-    MinLockDuration,
+    Registry,
 }
 
 /// Proposal lifecycle states
@@ -105,25 +98,6 @@ pub struct VoteRecord {
 #[contract]
 pub struct GovernanceContract;
 
-// ── Private storage helpers ──────────────────────────────────────────────────
-
-fn get_admin(env: &Env) -> Address {
-    env.storage().instance().get(&DataKey::Admin).expect("admin not found")
-}
-
-fn get_proposal(env: &Env, id: u32) -> Proposal {
-    env.storage().instance().get(&DataKey::Proposal(id)).expect("proposal not found")
-}
-
-fn get_user_credits(env: &Env, user: &Address) -> i128 {
-    env.storage()
-        .instance()
-        .get(&DataKey::VotingCredits(user.clone()))
-        .unwrap_or(DEFAULT_VOTING_CREDITS)
-}
-
-// ────────────────────────────────────────────────────────────────────────────
-
 #[contractimpl]
 impl GovernanceContract {
     /// Initialize the governance contract
@@ -148,6 +122,12 @@ impl GovernanceContract {
         env.storage().instance().set(&DataKey::QuorumPercentage, &DEFAULT_QUORUM_PERCENTAGE);
     }
 
+    pub fn set_registry(env: Env, registry: Address) {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).expect("not initialized");
+        admin.require_auth();
+        env.storage().instance().set(&DataKey::Registry, &registry);
+    }
+
     /// Allocate voting credits to a user
     ///
     /// Voting credits determine how much quadratic voting power a user has.
@@ -162,14 +142,23 @@ impl GovernanceContract {
     /// # Panics
     /// Panics if caller is not admin
     pub fn allocate_credits(env: Env, caller: Address, user: Address, credits: i128) {
+        Self::ensure_not_paused(&env);
         caller.require_auth();
         
-        let admin = get_admin(&env);
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("admin not found");
         
         assert!(caller == admin, "only admin can allocate credits");
         assert!(credits >= 0, "credits must be non-negative");
 
-        let current_credits = get_user_credits(&env, &user);
+        let current_credits: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::VotingCredits(user.clone()))
+            .unwrap_or(0);
         
         let total_issued: i128 = env
             .storage()
@@ -196,7 +185,10 @@ impl GovernanceContract {
     /// # Returns
     /// The user's remaining voting credits
     pub fn get_credits(env: Env, user: Address) -> i128 {
-        get_user_credits(&env, &user)
+        env.storage()
+            .instance()
+            .get(&DataKey::VotingCredits(user))
+            .unwrap_or(DEFAULT_VOTING_CREDITS)
     }
 
     /// Set the quorum percentage
@@ -209,9 +201,14 @@ impl GovernanceContract {
     /// # Panics
     /// Panics if caller is not admin or percentage is invalid
     pub fn set_quorum_percentage(env: Env, caller: Address, percentage: i128) {
+        Self::ensure_not_paused(&env);
         caller.require_auth();
         
-        let admin = get_admin(&env);
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("admin not found");
         
         assert!(caller == admin, "only admin can set quorum");
         assert!(percentage >= 0 && percentage <= 100, "invalid quorum percentage");
@@ -245,6 +242,7 @@ impl GovernanceContract {
         description: String,
         voting_period: u64,
     ) -> u32 {
+        Self::ensure_not_paused(&env);
         creator.require_auth();
         assert!(voting_period > 0, "voting period must be positive");
 
@@ -326,10 +324,15 @@ impl GovernanceContract {
         support: bool,
         votes: i128,
     ) {
+        Self::ensure_not_paused(&env);
         voter.require_auth();
         assert!(votes > 0, "votes must be positive");
 
-        let mut proposal = get_proposal(&env, proposal_id);
+        let mut proposal: Proposal = env
+            .storage()
+            .instance()
+            .get(&DataKey::Proposal(proposal_id))
+            .expect("proposal not found");
 
         let current_time = env.ledger().timestamp();
         assert!(
@@ -356,7 +359,11 @@ impl GovernanceContract {
             .expect("quadratic vote cost overflowed");
 
         // Check user has sufficient credits
-        let user_credits = get_user_credits(&env, &voter);
+        let user_credits: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::VotingCredits(voter.clone()))
+            .unwrap_or(DEFAULT_VOTING_CREDITS);
         
         assert!(user_credits >= quadratic_cost, "insufficient voting credits");
 
@@ -415,7 +422,10 @@ impl GovernanceContract {
     /// # Panics
     /// Panics if proposal is not found
     pub fn get_proposal(env: Env, proposal_id: u32) -> Proposal {
-        get_proposal(&env, proposal_id)
+        env.storage()
+            .instance()
+            .get(&DataKey::Proposal(proposal_id))
+            .expect("proposal not found")
     }
 
     /// Check if a proposal has passed (more votes for than against, quorum met)
@@ -438,7 +448,11 @@ impl GovernanceContract {
     /// - voting period has not ended
     /// - proposal has already been executed
     pub fn has_passed(env: Env, proposal_id: u32) -> bool {
-        let mut proposal = get_proposal(&env, proposal_id);
+        let mut proposal: Proposal = env
+            .storage()
+            .instance()
+            .get(&DataKey::Proposal(proposal_id))
+            .expect("proposal not found");
 
         let current_time = env.ledger().timestamp();
 
@@ -478,7 +492,11 @@ impl GovernanceContract {
     /// # Returns
     /// True if quorum was reached
     pub fn quorum_reached(env: Env, proposal_id: u32) -> bool {
-        let proposal = get_proposal(&env, proposal_id);
+        let proposal: Proposal = env
+            .storage()
+            .instance()
+            .get(&DataKey::Proposal(proposal_id))
+            .expect("proposal not found");
 
         let total_votes = proposal.votes_for + proposal.votes_against;
         total_votes >= proposal.quorum
@@ -503,11 +521,20 @@ impl GovernanceContract {
     /// - proposal did not pass the vote
     /// - quorum was not reached
     pub fn execute_proposal(env: Env, executor: Address, proposal_id: u32) {
+        Self::ensure_not_paused(&env);
         executor.require_auth();
 
-        let admin = get_admin(&env);
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("admin not found");
 
-        let mut proposal = get_proposal(&env, proposal_id);
+        let mut proposal: Proposal = env
+            .storage()
+            .instance()
+            .get(&DataKey::Proposal(proposal_id))
+            .expect("proposal not found");
 
         assert!(
             executor == admin || executor == proposal.creator,
@@ -564,7 +591,11 @@ impl GovernanceContract {
     /// # Panics
     /// Panics if proposal is not found
     pub fn get_proposal_votes(env: Env, proposal_id: u32) -> (i128, i128) {
-        let proposal = get_proposal(&env, proposal_id);
+        let proposal: Proposal = env
+            .storage()
+            .instance()
+            .get(&DataKey::Proposal(proposal_id))
+            .expect("proposal not found");
 
         (proposal.votes_for, proposal.votes_against)
     }
@@ -691,7 +722,11 @@ impl GovernanceContract {
     /// # Returns
     /// Total quadratic cost spent
     pub fn get_proposal_quadratic_cost(env: Env, proposal_id: u32) -> i128 {
-        let proposal = get_proposal(&env, proposal_id);
+        let proposal: Proposal = env
+            .storage()
+            .instance()
+            .get(&DataKey::Proposal(proposal_id))
+            .expect("proposal not found");
         
         proposal.total_quadratic_cost
     }
@@ -705,75 +740,22 @@ impl GovernanceContract {
     /// # Returns
     /// Number of unique voters
     pub fn get_voter_count(env: Env, proposal_id: u32) -> u32 {
-        let proposal = get_proposal(&env, proposal_id);
+        let proposal: Proposal = env
+            .storage()
+            .instance()
+            .get(&DataKey::Proposal(proposal_id))
+            .expect("proposal not found");
         
         proposal.voter_count
     }
 
-    // =========================================================================
-    // Issue #128: Snapshot & Staking Duration-Based Voting
-    // =========================================================================
-
-    /// Set staking contract for duration-based voting power
-    pub fn set_staking_contract(env: Env, caller: Address, staking_contract: Address) {
-        caller.require_auth();
-        let admin: Address = env.storage().instance().get(&DataKey::Admin).expect("admin not found");
-        assert!(caller == admin, "only admin can set staking contract");
-        env.storage().instance().set(&DataKey::StakingContract, &staking_contract);
-    }
-
-    /// Set minimum lock duration to prevent flash-loan voting
-    pub fn set_min_lock_duration(env: Env, caller: Address, duration_seconds: u64) {
-        caller.require_auth();
-        let admin: Address = env.storage().instance().get(&DataKey::Admin).expect("admin not found");
-        assert!(caller == admin, "only admin can set min lock duration");
-        env.storage().instance().set(&DataKey::MinLockDuration, &duration_seconds);
-    }
-
-    /// Create snapshot of voting power at current ledger to prevent flash-loan voting
-    pub fn create_snapshot(env: Env, caller: Address, proposal_id: u32) {
-        caller.require_auth();
-        let proposal: Proposal = env.storage().instance().get(&DataKey::Proposal(proposal_id)).expect("proposal not found");
-        let admin: Address = env.storage().instance().get(&DataKey::Admin).expect("admin not found");
-        assert!(caller == admin || caller == proposal.creator, "unauthorized");
-        
-        let snapshot_ledger = env.ledger().sequence();
-        env.storage().instance().set(&DataKey::ProposalSnapshot(proposal_id), &snapshot_ledger);
-    }
-
-    /// Get weighted voting power based on staking duration
-    pub fn get_weighted_voting_power(env: Env, user: Address, proposal_id: u32) -> i128 {
-        let has_staking = env.storage().instance().has(&DataKey::StakingContract);
-        if !has_staking {
-            return Self::get_credits(env.clone(), user);
-        }
-        
-        let base_credits = Self::get_credits(env.clone(), user);
-        let min_lock_duration: u64 = env.storage().instance().get(&DataKey::MinLockDuration).unwrap_or(0);
-        
-        if min_lock_duration == 0 {
-            return base_credits;
-        }
-        
-        // In production, would query staking contract for actual lock duration
-        base_credits
-    }
-
-    /// Check if user is eligible to vote based on snapshot and lock requirements
-    pub fn is_eligible_to_vote(env: Env, user: Address, proposal_id: u32) -> bool {
-        if env.storage().instance().has(&DataKey::ProposalSnapshot(proposal_id)) {
-            let snapshot_key = DataKey::VotingPowerSnapshot(user.clone(), proposal_id);
-            if !env.storage().instance().has(&snapshot_key) {
-                return false;
+    fn ensure_not_paused(env: &Env) {
+        if let Some(registry_addr) = env.storage().instance().get::<_, Address>(&DataKey::Registry) {
+            let is_paused: bool = env.invoke_contract(&registry_addr, &soroban_sdk::symbol_short!("is_paused"), ().into_val(env));
+            if is_paused {
+                panic!("system is paused");
             }
         }
-        true
-    }
-
-    /// Record user's voting power at snapshot time
-    pub fn record_voting_power_snapshot(env: Env, user: Address, proposal_id: u32) {
-        let voting_power = Self::get_weighted_voting_power(env.clone(), user.clone(), proposal_id);
-        env.storage().instance().set(&DataKey::VotingPowerSnapshot(user, proposal_id), &voting_power);
     }
 }
 

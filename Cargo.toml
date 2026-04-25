@@ -12,10 +12,12 @@ members = [
     "src/flash_loan",
     "src/kyc",
     "src/staking",
-    "src/escrow_timelock",
     "src/bridge",
+    "src/escrow_timelock",
     "src/oracle_medianizer",
     "src/random",
+    "src/security_registry",
+    "src/vesting",
 ]
 resolver = "2"
 

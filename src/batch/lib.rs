@@ -1,35 +1,18 @@
 #![no_std]
-//! Batch Transaction Execution Contract
-//!
-//! This contract allows a user to execute multiple operations across different
-//! contracts in one atomic transaction. All calls succeed or all fail.
-//!
-//! Security Features:
-//! - Atomicity: All sub-calls succeed or the entire transaction reverts
-//! - Auth forwarding: Each sub-call requires proper authorization
-//! - Replay protection: Nonce-based protection against replay attacks
+use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, IntoVal, Symbol, Val, Vec};
 
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, Symbol, Val, Vec};
-
-/// Represents a single contract call within a batch
 #[contracttype]
 #[derive(Clone, Debug)]
 pub struct Call {
-    /// Target contract address
     pub contract: Address,
-    /// Function name to call
     pub function: Symbol,
-    /// Arguments to pass to the function
     pub args: Vec<Val>,
 }
 
-/// Storage keys for batch executor
 #[contracttype]
 pub enum DataKey {
-    /// Admin address
     Admin,
-    /// User nonce for replay protection
-    Nonce(Address),
+    Registry,
 }
 
 #[contract]
@@ -37,63 +20,39 @@ pub struct BatchExecutor;
 
 #[contractimpl]
 impl BatchExecutor {
-    /// Initialize the batch executor contract
     pub fn initialize(env: Env, admin: Address) {
         if env.storage().instance().has(&DataKey::Admin) {
             panic!("already initialized");
         }
-        admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
-        env.storage().instance().set(&DataKey::Nonce(admin), &0u64);
     }
 
-    /// Executes a sequence of contract calls in a single atomic transaction.
+    pub fn set_registry(env: Env, registry: Address) {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).expect("not initialized");
+        admin.require_auth();
+        env.storage().instance().set(&DataKey::Registry, &registry);
+    }
+
+    /// Executes a sequence of contract calls in a single transaction.
     /// Returns a list of the execution results.
     /// If any call fails, the entire transaction reverts.
-    pub fn execute_batch(env: Env, caller: Address, calls: Vec<Call>) -> Vec<Val> {
-        caller.require_auth();
-
-        // Increment nonce for replay protection
-        let current_nonce: u64 = env
-            .storage()
-            .instance()
-            .get(&DataKey::Nonce(caller.clone()))
-            .unwrap_or(0);
-        env.storage()
-            .instance()
-            .set(&DataKey::Nonce(caller.clone()), &(current_nonce + 1));
-
-        // Execute all calls atomically
+    pub fn execute_batch(env: Env, calls: Vec<Call>) -> Vec<Val> {
+        Self::ensure_not_paused(&env);
         let mut results = Vec::new(&env);
         for call in calls.iter() {
-            let result: Val =
-                env.invoke_contract(&call.contract, &call.function, call.args.clone());
+            let result: Val = env.invoke_contract(&call.contract, &call.function, call.args.clone());
             results.push_back(result);
         }
-
-        // Emit event for batch execution
-        env.events().publish(
-            (soroban_sdk::symbol_short!("batch"), caller.clone()),
-            (current_nonce, calls.len()),
-        );
-
         results
     }
 
-    /// Get the current nonce for an address
-    pub fn get_nonce(env: Env, user: Address) -> u64 {
-        env.storage()
-            .instance()
-            .get(&DataKey::Nonce(user))
-            .unwrap_or(0)
-    }
-
-    /// Get the admin address
-    pub fn get_admin(env: Env) -> Address {
-        env.storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .expect("admin not set")
+    fn ensure_not_paused(env: &Env) {
+        if let Some(registry_addr) = env.storage().instance().get::<_, Address>(&DataKey::Registry) {
+            let is_paused: bool = env.invoke_contract(&registry_addr, &soroban_sdk::symbol_short!("is_paused"), ().into_val(env));
+            if is_paused {
+                panic!("system is paused");
+            }
+        }
     }
 }
 
