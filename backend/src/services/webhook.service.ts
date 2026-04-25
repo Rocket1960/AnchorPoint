@@ -1,5 +1,6 @@
 import { createHmac, timingSafeEqual } from 'crypto';
 import logger from '../utils/logger';
+import { traceAsync, SpanKind } from '../utils/tracing';
 
 export interface TransactionWebhookRecord {
   id: string;
@@ -217,12 +218,18 @@ export class WebhookService {
     payload: TransactionStatusChangedPayload,
     transactionId: string
   ): Promise<WebhookDeliveryResult> {
-    const requestBody = JSON.stringify(payload);
-    let lastStatusCode: number | undefined;
-    let lastResponseBody: string | undefined;
-    let lastError: unknown;
+    return traceAsync(
+      'webhook.deliver',
+      async (span) => {
+        span.setAttribute('webhook.transaction_id', transactionId);
+        span.setAttribute('webhook.event_type', payload.event);
+        
+        const requestBody = JSON.stringify(payload);
+        let lastStatusCode: number | undefined;
+        let lastResponseBody: string | undefined;
+        let lastError: unknown;
 
-    for (let attempt = 1; attempt <= this.config.maxRetries + 1; attempt += 1) {
+        for (let attempt = 1; attempt <= this.config.maxRetries + 1; attempt += 1) {
       const timestamp = new Date().toISOString();
       const signature = signWebhookPayload(requestBody, this.config.secret!, timestamp);
       const controller = new AbortController();
@@ -304,6 +311,13 @@ export class WebhookService {
       responseBody: lastResponseBody,
       error: lastError instanceof Error ? lastError.message : 'Webhook delivery failed',
     };
+  },
+  SpanKind.CLIENT,
+  {
+    'webhook.url': this.config.url,
+    'webhook.max_retries': this.config.maxRetries,
+  }
+  );
   }
 
   private getRetryDelay(attempt: number): number {
@@ -322,7 +336,13 @@ export const updateTransactionStatusAndNotify = async ({
   transaction: TransactionWebhookRecord;
   webhookDelivery: WebhookDeliveryResult;
 }> => {
-  const existingTransaction = await prisma.transaction.findUnique({
+  return traceAsync(
+    'transaction.update_status_and_notify',
+    async (span) => {
+      span.setAttribute('transaction.id', transactionId);
+      span.setAttribute('transaction.next_status', nextStatus);
+      
+      const existingTransaction = await prisma.transaction.findUnique({
     where: { id: transactionId },
     include: {
       user: {
@@ -377,14 +397,20 @@ export const updateTransactionStatusAndNotify = async ({
     });
 
     return {
-      transaction: updatedTransaction,
-      webhookDelivery: {
-        delivered: false,
-        attempts: 1,
-        error: error instanceof Error ? error.message : 'Unknown webhook error',
-      },
-    };
+        transaction: updatedTransaction,
+        webhookDelivery: {
+          delivered: false,
+          attempts: 1,
+          error: error instanceof Error ? error.message : 'Unknown webhook error',
+        },
+      };
+    }
+  },
+  SpanKind.INTERNAL,
+  {
+    'transaction.operation': 'update_status_and_notify',
   }
+  );
 };
 
 export default defaultWebhookService;
