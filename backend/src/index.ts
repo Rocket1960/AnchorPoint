@@ -10,11 +10,9 @@ import sep6Router from './api/routes/sep6.route';
 import sep38Router from './api/routes/sep38.route';
 import infoRouter from './api/routes/info.route';
 import metricsRouter from './api/routes/metrics.route';
-import queueRouter from './api/routes/queue.route';
+import feeRouter from './api/routes/fee.route';
 import { errorHandler } from './api/middleware/error.middleware';
 import { metricsMiddleware, connectionTracker } from './api/middleware/metrics.middleware';
-import { apiKeyMiddleware } from './api/middleware/api-key.middleware';
-import { burstRateLimiter, sustainedRateLimiter } from './api/middleware/rate-limit.middleware';
 
 const app = express();
 const PORT = config.PORT;
@@ -100,15 +98,7 @@ app.get('/api-docs.json', (req: Request, res: Response) => {
 app.use(connectionTracker);
 app.use(metricsMiddleware);
 
-// Apply API Key Validation and dynamic rate limiting globally
-app.use(apiKeyMiddleware);
-app.use(burstRateLimiter);
-app.use(sustainedRateLimiter);
-
 app.use('/api/transactions', transactionsRouter);
-
-// Distributed task queue for contract interactions
-app.use('/api/queue', queueRouter);
 
 // Prometheus metrics endpoint
 app.use('/metrics', metricsRouter);
@@ -124,6 +114,9 @@ app.use('/sep24', sep24Router);
 
 // SEP-6 routes
 app.use('/sep6', sep6Router);
+
+// Dynamic fee engine
+app.use('/fees', feeRouter);
 
 // Global error handling middleware (must be last)
 app.use(errorHandler);
