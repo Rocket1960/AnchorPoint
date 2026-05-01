@@ -2,6 +2,8 @@ import jwt from 'jsonwebtoken';
 import { randomBytes } from 'crypto';
 
 import { RedisService } from './redis.service';
+import { traceAsync, traceSync, SpanKind } from '../utils/tracing';
+import configService from './config.service';
 import { config } from '../config/env';
 import { traceAsync, traceSync, SpanKind } from '../utils/tracing';
 import configService from './config.service';

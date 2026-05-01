@@ -17,6 +17,15 @@ enum Tier {
 }
 
 model User {
+  id            String        @id @default(uuid())
+  publicKey     String        @unique
+  email         String?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+  transactions  Transaction[]
+  kycCustomer   KycCustomer?
+  apiKeys       ApiKey[]
+  recurringPaymentSchedules RecurringPaymentSchedule[]
   id                    String                 @id @default(uuid())
   publicKey             String                 @unique
   email                 String?
@@ -66,6 +75,55 @@ model ApiKey {
 
   @@index([key])
   @@index([userId])
+}
+
+enum RecurringPaymentScheduleStatus {
+  ACTIVE
+  PAUSED
+  CANCELLED
+}
+
+enum RecurringPaymentRunStatus {
+  PENDING
+  PROCESSING
+  SUCCEEDED
+  FAILED
+}
+
+model RecurringPaymentSchedule {
+  id          String   @id @default(uuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+  destination String
+  assetCode   String
+  amount      String
+  cron        String
+  status      RecurringPaymentScheduleStatus @default(ACTIVE)
+  nextRunAt   DateTime
+  lastRunAt   DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  runs        RecurringPaymentRun[]
+
+  @@index([userId])
+  @@index([status, nextRunAt])
+}
+
+model RecurringPaymentRun {
+  id          String   @id @default(uuid())
+  scheduleId  String
+  schedule    RecurringPaymentSchedule @relation(fields: [scheduleId], references: [id])
+  status      RecurringPaymentRunStatus @default(PENDING)
+  attempt     Int      @default(0)
+  stellarTxId String?  @unique
+  error       String?
+  startedAt   DateTime?
+  finishedAt  DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([scheduleId])
+  @@index([status])
 }
 
 model Transaction {
@@ -187,7 +245,6 @@ model KycCustomer {
   @@index([userId])
 }
 
-<<<<<<< main
 model SystemConfig {
   id        String   @id @default(uuid())
   version   Int      @unique
@@ -197,7 +254,6 @@ model SystemConfig {
 
   @@index([isActive])
   @@index([createdAt])
-=======
 enum JobStatus {
   PENDING
   ACTIVE
@@ -244,5 +300,4 @@ model ContractJob {
   @@index([status])
   @@index([createdBy])
   @@index([type])
->>>>>>> main
 }

@@ -256,6 +256,94 @@ export class WebhookService {
         let lastResponseBody: string | undefined;
         let lastError: unknown;
 
+        for (let attempt = 1; attempt <= config.maxRetries + 1; attempt += 1) {
+          const timestamp = new Date().toISOString();
+          const signature = signWebhookPayload(requestBody, config.secret!, timestamp);
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), config.timeoutMs);
+
+          try {
+            const response = await this.httpClient(config.url!, {
+              method: 'POST',
+              headers: {
+                'content-type': 'application/json',
+                'x-anchorpoint-event': payload.event,
+                'x-anchorpoint-signature': signature,
+                'x-anchorpoint-timestamp': timestamp,
+                'x-anchorpoint-delivery-attempt': String(attempt),
+              },
+              body: requestBody,
+              signal: controller.signal,
+            });
+
+            clearTimeout(timeout);
+            lastStatusCode = response.status;
+            lastResponseBody = await response.text();
+
+            if (response.ok) {
+              this.log.info('Webhook delivered successfully', {
+                transactionId,
+                attempts: attempt,
+                statusCode: response.status,
+              });
+              return {
+                delivered: true,
+                attempts: attempt,
+                statusCode: response.status,
+                responseBody: lastResponseBody,
+              };
+            }
+
+            if (!RETRYABLE_STATUS_CODES.has(response.status) || attempt > config.maxRetries) {
+              this.log.warn('Webhook delivery failed without further retries', {
+                transactionId,
+                attempts: attempt,
+                statusCode: response.status,
+              });
+              return {
+                delivered: false,
+                attempts: attempt,
+                statusCode: response.status,
+                responseBody: lastResponseBody,
+                error: `Webhook responded with status ${response.status}`,
+              };
+            }
+          } catch (error) {
+            clearTimeout(timeout);
+            lastError = error;
+
+            if (attempt > config.maxRetries) {
+              this.log.error('Webhook delivery exhausted retries after request error', {
+                transactionId,
+                attempts: attempt,
+                error: error instanceof Error ? error.message : String(error),
+              });
+              return {
+                delivered: false,
+                attempts: attempt,
+                statusCode: lastStatusCode,
+                responseBody: lastResponseBody,
+                error: error instanceof Error ? error.message : 'Unknown webhook error',
+              };
+            }
+          }
+
+          await this.sleepFn(this.getRetryDelay(attempt));
+        }
+
+        return {
+          delivered: false,
+          attempts: config.maxRetries + 1,
+          statusCode: lastStatusCode,
+          responseBody: lastResponseBody,
+          error: lastError instanceof Error ? lastError.message : 'Webhook delivery failed',
+        };
+      },
+      SpanKind.CLIENT,
+      {
+        'webhook.url': config.url ?? '',
+        'webhook.max_retries': config.maxRetries,
+      }
         for (let attempt = 1; attempt <= config.WEBHOOK_MAX_RETRIES + 1; attempt += 1) {
       const timestamp = new Date().toISOString();
       const signature = signWebhookPayload(requestBody, config.WEBHOOK_SECRET!, timestamp);
