@@ -120,13 +120,15 @@ impl MultiTokenStaking {
             rpt += amount * PRECISION / total_staked;
             env.storage()
                 .instance()
-                .set(&DataKey::RewardPerTokenStored(reward_token), &rpt);
+                .set(&DataKey::RewardPerTokenStored(reward_token.clone()), &rpt);
         }
 
         // Topic: event name only; from + amount in data.
         env.events().publish(
             symbol_short!("dep_rwd"),
             (from, amount),
+            (symbol_short!("dep_rwd"), from, reward_token),
+            amount,
         );
     }
 
@@ -222,6 +224,7 @@ impl MultiTokenStaking {
 
             env.events()
                 .publish(symbol_short!("claimed"), (user, reward));
+                .publish((symbol_short!("claimed"), user, reward_token), reward);
         }
 
         reward
@@ -256,6 +259,7 @@ impl MultiTokenStaking {
                 // Topic: event name only; user + reward in data.
                 env.events()
                     .publish(symbol_short!("claimed"), (user.clone(), reward));
+                    .publish((symbol_short!("claimed"), user.clone(), reward_token.clone()), reward);
             }
         }
     }
