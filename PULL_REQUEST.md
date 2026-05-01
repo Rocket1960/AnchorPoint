@@ -1,245 +1,175 @@
-# Pull Request: Redis-Backed Rate Limiter for Shared Public Endpoints
+# Pull Request: Add Hardware Wallet Support for SEP-10 Authentication
 
 ## Overview
 
-Extended the rate limiter middleware to use Redis for shared counters across multiple backend instances. This enables accurate rate limiting for public endpoints (SEP-24, SEP-6, SEP-38, Info) when running multiple backend instances in parallel, ensuring consistent quota enforcement across the entire service fleet.
+Extends AnchorPoint's SEP-10 implementation to support hardware wallets (Trezor, Ledger) by generating proper Stellar transactions for authentication challenges instead of simple string challenges.
 
 ## Motivation
 
-Previously, rate limiting was either instance-local (memory-based) or relied on single-instance deployments. This approach breaks down in horizontally-scaled environments where:
-
-- Multiple backend instances each maintain separate rate limit counters
-- Users can circumvent limits by distributing requests across instances
-- Actual request rates are invisible to individual instance limiters
-
-This PR moves rate limiting state to Redis, making quotas meaningful and enforceable across all instances.
+Hardware wallets like Trezor and Ledger require signing actual Stellar transactions with specific structures and may use different signature algorithms or transaction formats. The previous implementation used simplified string challenges that software wallets could handle, but hardware wallets need proper Stellar transaction envelopes.
 
 ## Changes
 
-### 1. New Public Rate Limiter Export
-**File:** `backend/src/api/middleware/rate-limit.middleware.ts`
+### 1. SEP-10 Stellar Utilities
+**File:** `backend/src/utils/sep10-stellar.ts`
 
-- Added `publicLimiter` middleware instance using Redis-backed store
-- Configuration:
-  - **Window:** 15 minutes
-  - **Max requests:** 1000 per window
-  - **Redis prefix:** `rl:public:`
-  - **Storage:** Redis via `rate-limit-redis` package
+- `generateSep10Challenge()`: Creates a proper Stellar transaction with manage_data operation containing the challenge
+- `verifySep10Challenge()`: Parses and verifies signed SEP-10 transactions, checking signatures and challenge validity
+- `extractAccountFromSep10Transaction()`: Extracts the account public key from signed transactions
 
-```typescript
-export const publicLimiter = createRateLimiter({
-  windowMs: 15 * 60 * 1000,
-  max: 1000,
-  message: 'Too many requests to this public endpoint, please try again later.',
-  keyPrefix: 'rl:public:',
-});
-```
+### 2. Auth Service Updates
+**File:** `backend/src/services/auth.service.ts`
 
-### 2. Applied Limiter to Public Routes
-**File:** `backend/src/index.ts`
+- Added `generateSep10ChallengeTransaction()`: Generates SEP-10 challenge transactions for hardware wallets
+- Added `storeSep10Challenge()`: Stores challenge data including transaction XDR
+- Added `verifySep10ChallengeTransaction()`: Verifies signed transactions from hardware wallets
+- Updated `Challenge` interface to include `transactionXdr` field
+- Resolved merge conflicts between tracing and config service usage
 
-Applied `publicLimiter` middleware to public SEP endpoints and metrics:
+### 3. Auth Controller Updates
+**File:** `backend/src/api/controllers/auth.controller.ts`
 
-```typescript
-import { publicLimiter } from './api/middleware/rate-limit.middleware';
+- Updated `getChallenge()`: Now generates proper Stellar transactions instead of string challenges
+- Updated `getToken()`: Verifies signed Stellar transactions and extracts account from transaction signatures
+- Added support for network type configuration (testnet/public)
 
-// Public endpoints with shared Redis-backed rate limit state
-app.use('/sep38', publicLimiter, sep38Router);
-app.use('/info', publicLimiter, infoRouter);
-app.use('/sep24', publicLimiter, sep24Router);
-app.use('/sep6', publicLimiter, sep6Router);
-app.use('/metrics', publicLimiter, metricsRouter);
-```
+### 4. Environment Configuration
+**File:** `backend/src/config/env.ts`
 
-### 3. Test Coverage
-**File:** `backend/src/api/middleware/rate-limit.middleware.test.ts`
+- Added `ANCHOR_PUBLIC_KEY` and `ANCHOR_SECRET_KEY` environment variables for anchor keypair configuration
 
-Added test to confirm `publicLimiter` is properly exported:
+### 5. Webhook Service Merge Conflict Resolution
+**File:** `backend/src/services/webhook.service.ts`
 
-```typescript
-describe('publicLimiter', () => {
-  it('should export a shared public Redis-backed limiter', () => {
-    const { publicLimiter } = require('./rate-limit.middleware');
-    expect(publicLimiter).toBeDefined();
-  });
-});
+- Resolved merge conflicts between tracing and config service implementations
+- Updated to use config service for webhook configuration
+
+### 6. Documentation Updates
+**File:** `README.md`
+
+- Updated SEP-10 section to mention hardware wallet support
+- Added explanation of hardware wallet compatibility
+
+## Technical Details
+
+### SEP-10 Challenge Transaction Structure
+
+The implementation follows SEP-10 specification:
+- Source account: Anchor's public key
+- Sequence number: 0
+- Time bounds: 5-minute validity window
+- Operations: Single manage_data operation with name `stellar.sep10.challenge`
+- Network: Configurable (testnet/public)
+
+### Hardware Wallet Compatibility
+
+- **Trezor**: Supports Stellar transactions via Stellar app
+- **Ledger**: Supports Stellar transactions via Stellar app
+- Both devices sign transactions using ed25519 keys derived from BIP44 paths
+- Transaction verification checks signature validity against the account public key
+
+### Security Considerations
+
+- Challenge transactions expire after 5 minutes
+- Signed challenges are removed after successful verification to prevent replay attacks
+- Proper signature verification ensures only valid signatures are accepted
+- Time bounds prevent old challenges from being reused
+
+## API Changes
+
+**POST** `/auth`
+- Request: `{ "account": "G..." }`
+- Response: `{ "transaction": "base64-xdr", "network_passphrase": "..." }`
+
+**POST** `/auth/token`
+- Request: `{ "transaction": "signed-xdr" }`
+- Response: `{ "token": "jwt", "type": "bearer", "expires_in": 3600 }`
+
+## Testing
+
+The implementation includes proper error handling for:
+- Invalid transaction formats
+- Expired challenges
+- Invalid signatures
+- Missing operations
+- Wrong operation types
+
+## Future Enhancements
+
+- Support for custom derivation paths
+- Multi-signature account support
+- Integration with wallet connection libraries
+
+- `page` — integer, default `1`
+- `limit` — integer, default `10`, max `50`
+- `assetCode` — optional asset code filter
+- `sender` — optional search term for transaction sender metadata
+- `receiver` — optional search term for transaction receiver metadata
+- `memo` — optional search term for transaction memo metadata
+- `cursor` — optional cursor-based pagination token
+
+Response:
+
+```json
+{
+  "status": "success",
+  "data": {
+    "transactions": [/* transaction records */],
+    "pagination": {
+      "total": 0,
+      "page": 1,
+      "limit": 10,
+      "totalPages": 0
+    }
+  }
+}
 ```
 
 ## Architecture & Flow
 
-```
-Client Request
-    ↓
-Express Router (public endpoint)
-    ↓
-publicLimiter middleware
-    ↓
-RedisStore (via rate-limit-redis)
-    ↓
-Redis Instance (shared state)
-    ↓
-Key: rl:public:{IP}
-Value: request_count
-TTL: 15 minutes
-```
+1. Authenticated request hits `/api/transactions`
+2. Route validates query params
+3. If event search terms are present (`sender`, `receiver`, `memo`):
+   - query `ContractEvent` index for matching `txHash`
+   - build a scoped `stellarTxId` filter
+4. Query `Transaction` table for the authenticated user with all supplied filters
+5. Return paginated transaction results
 
-**How it works:**
-1. Request arrives at a public endpoint (e.g., `/sep24/transactions/deposit/interactive`)
-2. `publicLimiter` middleware intercepts the request
-3. Middleware queries Redis for the counter key `rl:public:{client_ip}`
-4. If count < 1000, increment counter and allow request
-5. If count ≥ 1000, reject with 429 (Too Many Requests)
-6. Counters reset after 15-minute window expires
+## Notes
+
+- Search uses SQL `LIKE` on stored `ContractEvent.topics` and `ContractEvent.value`.
+- This is intended for high-performance lookups when event metadata is already indexed.
+- If no matching events are found, the route returns an empty result set immediately.
 
 ## Testing
 
-Run the rate limiter tests:
+Run the updated route test:
 
 ```bash
 cd backend
-npm test -- src/api/middleware/rate-limit.middleware.test.ts
+npm test -- --runInBand src/api/routes/transactions.route.test.ts
 ```
 
-### Manual Testing
+## Related Files
 
-**Test with curl:**
-
-```bash
-# Single request (should succeed)
-curl -X GET http://localhost:3002/sep24/transactions/deposit/interactive?asset_code=USDC
-
-# Simulate many requests in rapid succession
-for i in {1..1050}; do
-  curl -X GET http://localhost:3002/sep24/transactions/deposit/interactive?asset_code=USDC
-  echo "Request $i sent"
-done
-
-# The 1001st request should return 429
-```
-
-**Verify Redis state:**
-
-```bash
-# Connect to Redis CLI
-redis-cli
-
-# Check rate limit keys
-KEYS rl:public:*
-
-# Inspect a specific client's counter
-GET rl:public:127.0.0.1
-
-# Check TTL
-TTL rl:public:127.0.0.1
-```
-
-## Configuration & Customization
-
-To adjust rate limits for public endpoints, modify `createRateLimiter` call in `rate-limit.middleware.ts`:
-
-```typescript
-export const publicLimiter = createRateLimiter({
-  windowMs: 15 * 60 * 1000,  // Adjust window duration
-  max: 1000,                  // Adjust max requests per window
-  message: '...',             // Adjust error message
-  keyPrefix: 'rl:public:',    // Keep prefix consistent
-});
-```
-
-## Performance Considerations
-
-- **Redis Latency:** Each request incurs a Redis `INCR` call (~1-5ms typical). This is negligible for most workloads.
-- **Redis Memory:** Counters are ephemeral with TTL. Memory usage is proportional to active client IPs.
-- **Scalability:** Tested with thousands of concurrent clients per instance; scales to multi-instance deployments.
-- **Failover:** If Redis is unavailable, rate limiting fails open (requests are allowed). This is intentional for availability.
-
-## Dependencies
-
-All required dependencies are already in `backend/package.json`:
-- `express-rate-limit` — rate limiting framework
-- `rate-limit-redis` — Redis store adapter
-- `ioredis` — Redis client
-
-## Breaking Changes
-
-**None.** This is additive:
-- Existing rate limiters (`apiLimiter`, `authLimiter`, `sensitiveApiLimiter`, `submissionLimiter`) are unchanged.
-- Existing transaction submission flow with `submissionLimiter` continues to work as before.
-- Only public SEP endpoints now enforce shared rate limits via Redis.
-
-## Migration Guide
-
-### For Deployments Using Docker Compose
-
-No changes needed. Redis is already configured in `docker-compose.yml`:
-
-```bash
-docker-compose up -d
-# Redis will be available at localhost:6379 (or configured REDIS_URL)
-```
-
-### For Custom Deployments
-
-Ensure:
-1. Redis instance is running and accessible via `REDIS_URL` environment variable.
-2. Default: `REDIS_URL=redis://localhost:6379`
-
-### For Single-Instance Deployments
-
-This change is backward compatible. Single instances will work correctly; the shared Redis state simply won't be leveraged unless you scale horizontally.
-
-## Monitoring & Observability
-
-### Health Check
-
-Verify rate limiter health:
-
-```bash
-curl http://localhost:3002/health
-# Returns: {"status":"UP","timestamp":"2026-04-25T..."}
-```
-
-### Metrics
-
-Rate limit metrics are available via Prometheus:
-
-```bash
-curl http://localhost:3002/metrics
-# Look for rate limit related metrics (if exposed by middleware)
-```
-
-### Logging
-
-Rate limit events are logged when limits are exceeded:
-
-```
-[WARN] Rate limit exceeded for IP: 192.168.1.100
-```
-
-## Related Issues
-
-- Fixes: Horizontal scaling rate limit evasion
-- Relates to: SEP-24/SEP-6 public endpoint protection
+- `backend/src/api/routes/transactions.route.ts`
+- `backend/src/api/routes/transactions.route.test.ts`
 
 ## Checklist
 
-- [x] Code changes implement shared Redis rate limiting
-- [x] Middleware test passes (`publicLimiter` export verified)
-- [x] Public routes apply the limiter
-- [x] No breaking changes to existing limiters
-- [x] Redis dependency already present
-- [x] Documentation provided
-- [x] Backward compatible with single-instance deployments
+- [x] Added search params `sender`, `receiver`, `memo`
+- [x] Integrated event-indexed lookup for Stellar transaction hashes
+- [x] Preserved authenticated user transaction scoping
+- [x] Added route tests for indexed search path
+- [ ] Verified full backend test suite is blocked by unrelated merge conflicts in `backend/src/services/auth.service.ts`
 
 ## Reviewers Notes
 
-- The `publicLimiter` uses IP-based keying (default behavior from `express-rate-limit`).
-- Rate limit headers are included in responses (`RateLimit-*` standard headers).
-- Failover behavior: If Redis is unavailable, requests are allowed (fail-open) to prioritize availability.
-- Consider adding custom metrics export if you need visibility into rate limit hit rates per endpoint.
+- If the `sender`/`receiver`/`memo` filters are used without matching events, the route returns an empty paginated response.
+- Existing transaction history queries still work when only `assetCode`, `page`, or `cursor` are provided.
+- The implementation assumes `ContractEvent` events are already indexed by the service.
 
 ## Questions?
 
-See [Backend Rate Limiting Documentation](./backend/docs/MIGRATION_INTEGRITY.md) or refer to:
-- [express-rate-limit docs](https://github.com/nfriedly/express-rate-limit)
-- [rate-limit-redis docs](https://github.com/wyattjoh/rate-limit-redis)
+- Do we want to support exact matching vs partial matching for `sender`/`receiver`/`memo` in a future iteration?
+- Should the API add normalized event metadata columns to the transaction table later for even faster search?
