@@ -13,8 +13,18 @@ import infoRouter from './api/routes/info.route';
 import metricsRouter from './api/routes/metrics.route';
 import feeReportRouter from './api/routes/fee-report.route';
 import { feeReportScheduler } from './workers/fee-report.scheduler';
+import eventRouter from './api/routes/event.route';
+import notificationsRouter from './api/routes/notifications.route';
 import { errorHandler } from './api/middleware/error.middleware';
 import { metricsMiddleware, connectionTracker } from './api/middleware/metrics.middleware';
+import { notificationService } from './services/notification.service';
+import { ConsoleEmailProvider, ConsoleSmsProvider, ConsolePushProvider } from './lib/notifications/providers';
+import { NotificationType } from '@prisma/client';
+
+// Initialize Notification Engine
+notificationService.registerProvider(NotificationType.EMAIL, new ConsoleEmailProvider());
+notificationService.registerProvider(NotificationType.SMS, new ConsoleSmsProvider());
+notificationService.registerProvider(NotificationType.PUSH, new ConsolePushProvider());
 
 const app = express();
 const PORT = config.PORT;
@@ -103,6 +113,8 @@ app.use(metricsMiddleware);
 app.use('/api/transactions', transactionsRouter);
 app.use('/api/admin', adminRouter);
 app.use('/api/reports', feeReportRouter);
+app.use('/api/events', eventRouter);
+app.use('/api/notifications', notificationsRouter);
 
 // Prometheus metrics endpoint
 app.use('/metrics', metricsRouter);
