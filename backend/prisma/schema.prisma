@@ -160,6 +160,17 @@ model KycCustomer {
   @@index([userId])
 }
 
+<<<<<<< main
+model SystemConfig {
+  id        String   @id @default(uuid())
+  version   Int      @unique
+  settings  String
+  isActive  Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([isActive])
+  @@index([createdAt])
+=======
 enum JobStatus {
   PENDING
   ACTIVE
@@ -206,4 +217,5 @@ model ContractJob {
   @@index([status])
   @@index([createdBy])
   @@index([type])
+>>>>>>> main
 }
