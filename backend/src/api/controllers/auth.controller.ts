@@ -12,7 +12,17 @@ import {
   SignatureInfo,
   MultiKeyChallenge,
   MultiKeyVerifiedToken
+import {
+  generateSep10ChallengeTransaction,
+  storeSep10Challenge,
+  getChallenge as getChallengeFromRedis,
+  removeChallenge,
+  signToken,
+  verifySep10ChallengeTransaction,
+  extractAccountFromSep10Transaction
 } from '../../services/auth.service';
+import { config } from '../../config/env';
+import { NetworkType } from '../../config/networks';
 
 interface ChallengeRequest {
   account: string;
@@ -78,6 +88,23 @@ export const getChallenge = async (
       transaction: challenge, // Simplified - should be a base64 encoded transaction
       network_passphrase: process.env?.STELLAR_NETWORK_PASSPHRASE || 'Test SDF Network ; September 2015',
       multiKeyChallenge
+    // Use configured anchor key or generate a default one for demo
+    const anchorPublicKey = config.ANCHOR_PUBLIC_KEY || 'GBAD_PUBLIC_KEY'; // Default for demo
+    const networkType = config.STELLAR_NETWORK === 'public' ? NetworkType.PUBLIC : NetworkType.TESTNET;
+
+    // Generate a SEP-10 challenge transaction
+    const sep10Challenge = generateSep10ChallengeTransaction(
+      anchorPublicKey,
+      account,
+      networkType
+    );
+
+    // Store the challenge in Redis
+    await storeSep10Challenge(redisService, account, sep10Challenge);
+
+    const response: ChallengeResponse = {
+      transaction: sep10Challenge.transactionXdr,
+      network_passphrase: sep10Challenge.networkPassphrase
     };
 
     return res.json(response);
@@ -157,16 +184,44 @@ export const getToken = async (
     const storedChallenge = await getChallengeFromRedis(redisService, mockAccount);
 
     if (!storedChallenge || storedChallenge.challenge !== transaction) {
+    const networkType = config.STELLAR_NETWORK === 'public' ? NetworkType.PUBLIC : NetworkType.TESTNET;
+
+    // Extract the account from the signed transaction
+    const account = extractAccountFromSep10Transaction(transaction, networkType);
+
+    if (!account) {
       return res.status(400).json({
-        error: 'Invalid or expired challenge'
+        error: 'Invalid transaction format'
+      });
+    }
+
+    // Get the stored challenge
+    const storedChallenge = await getChallengeFromRedis(redisService, account);
+
+    if (!storedChallenge) {
+      return res.status(400).json({
+        error: 'Challenge not found or expired'
+      });
+    }
+
+    // Verify the signed transaction
+    const verification = verifySep10ChallengeTransaction(
+      transaction,
+      storedChallenge,
+      networkType
+    );
+
+    if (!verification.isValid) {
+      return res.status(400).json({
+        error: 'Invalid signature or challenge'
       });
     }
 
     // Remove the challenge to prevent replay attacks
-    await removeChallenge(redisService, mockAccount);
+    await removeChallenge(redisService, account);
 
     // Generate JWT token
-    const token = signToken(mockAccount);
+    const token = signToken(account);
 
     const response: TokenResponse = {
       token,

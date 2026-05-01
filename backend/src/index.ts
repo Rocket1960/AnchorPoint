@@ -11,8 +11,21 @@ import sep6Router from './api/routes/sep6.route';
 import sep38Router from './api/routes/sep38.route';
 import infoRouter from './api/routes/info.route';
 import metricsRouter from './api/routes/metrics.route';
+import feeReportRouter from './api/routes/fee-report.route';
+import { feeReportScheduler } from './workers/fee-report.scheduler';
+import eventRouter from './api/routes/event.route';
+import notificationsRouter from './api/routes/notifications.route';
 import { errorHandler } from './api/middleware/error.middleware';
 import { metricsMiddleware, connectionTracker } from './api/middleware/metrics.middleware';
+import { publicLimiter } from './api/middleware/rate-limit.middleware';
+import { notificationService } from './services/notification.service';
+import { ConsoleEmailProvider, ConsoleSmsProvider, ConsolePushProvider } from './lib/notifications/providers';
+import { NotificationType } from '@prisma/client';
+
+// Initialize Notification Engine
+notificationService.registerProvider(NotificationType.EMAIL, new ConsoleEmailProvider());
+notificationService.registerProvider(NotificationType.SMS, new ConsoleSmsProvider());
+notificationService.registerProvider(NotificationType.PUSH, new ConsolePushProvider());
 
 const app = express();
 const PORT = config.PORT;
@@ -100,21 +113,16 @@ app.use(metricsMiddleware);
 
 app.use('/api/transactions', transactionsRouter);
 app.use('/api/admin', adminRouter);
+app.use('/api/reports', feeReportRouter);
+app.use('/api/events', eventRouter);
+app.use('/api/notifications', notificationsRouter);
 
-// Prometheus metrics endpoint
-app.use('/metrics', metricsRouter);
-
-// SEP-38 Price Quotes API
-app.use('/sep38', sep38Router);
-
-// SEP-1 Info endpoint
-app.use('/info', infoRouter);
-
-// SEP-24 routes
-app.use('/sep24', sep24Router);
-
-// SEP-6 routes
-app.use('/sep6', sep6Router);
+// Public endpoints with shared Redis-backed rate limit state
+app.use('/sep38', publicLimiter, sep38Router);
+app.use('/info', publicLimiter, infoRouter);
+app.use('/sep24', publicLimiter, sep24Router);
+app.use('/sep6', publicLimiter, sep6Router);
+app.use('/metrics', publicLimiter, metricsRouter);
 
 // Global error handling middleware (must be last)
 app.use(errorHandler);
@@ -124,6 +132,9 @@ if (process.env.NODE_ENV !== 'test') {
   app.listen(PORT, () => {
     logger.info(`Backend service listening at http://localhost:${PORT}`);
     logger.info(`API Documentation available at http://localhost:${PORT}/api-docs`);
+    
+    // Start fee report scheduler
+    feeReportScheduler.start();
   });
 }
 
